@@ -1,0 +1,9 @@
+build/
+.pio/
+third_party/
+*.o
+*.d
+.DS_Store
+.vscode/
+compile_commands.json
+*.token

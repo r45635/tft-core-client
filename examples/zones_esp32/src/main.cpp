@@ -1,0 +1,230 @@
+// Pairs with a music server on the local network, follows one zone and prints the position as
+// the server pushes it. Serial console: p play/pause, n next, b previous, s stats, f forget.
+//
+// Measurements it prints, for sizing the library on a small board: internal RAM free at each
+// step, the largest message seen, and how regularly the position arrives.
+
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <Preferences.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <esp_heap_caps.h>
+
+#include "arduino_io.h"
+#ifndef NO_CLIENT
+#include "tftcore/client.h"
+#endif
+
+namespace {
+
+tftcore::arduino::MillisClock g_clock;
+#ifndef NO_CLIENT
+tftcore::arduino::TcpStream g_stream;
+tftcore::arduino::Udp g_udp;
+tftcore::arduino::PsramAlloc g_psram;
+tftcore::Client g_client(g_stream, g_udp, g_clock, g_psram);
+
+Preferences g_prefs;
+String g_zoneId, g_trackKey;
+uint32_t g_lastSeekAt = 0;
+int32_t g_lastSeek = -1;
+int g_seekTicks = 0, g_minGap = 1 << 30, g_maxGap = 0;
+long g_gapSum = 0;
+bool g_sawZones = false;
+#endif
+
+void printMemory(const char *when) {
+    Serial.printf("[mem] %-22s internal %6u B free (min %6u, largest block %6u), psram %u KB\n", when,
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                  (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+}
+
+// The TFT Panel firmware keeps the Wi-Fi credentials in NVS; reuse them so nothing has to be
+// typed on a board that has already run it, and nothing lands in the repository.
+bool wifiCredentials(String &ssid, String &pass) {
+    Preferences panel;
+    if (panel.begin("tftpanel", true)) {
+        ssid = panel.getString("ssid", "");
+        pass = panel.getString("pass", "");
+        panel.end();
+    }
+#if defined(WIFI_SSID) && defined(WIFI_PASS)
+    if (!ssid.length()) {
+        ssid = WIFI_SSID;
+        pass = WIFI_PASS;
+    }
+#endif
+    return ssid.length() > 0;
+}
+
+#ifndef NO_CLIENT
+void onState(void *, tftcore::State s, const char *detail) {
+    Serial.printf("[state] %s%s%s\n", tftcore::stateName(s), detail && *detail ? ": " : "", detail ? detail : "");
+    if (s == tftcore::State::Paired) printMemory("paired");
+}
+
+void onToken(void *, const char *serverId, const char *token) {
+    g_prefs.putString("srv", serverId);
+    g_prefs.putString("tok", token);
+    Serial.printf("[pair] saved the pairing for %s\n", serverId);
+}
+
+void onZones(void *, const tftcore::ZoneList &zones, const tftcore::ZoneDelta &delta) {
+    if (delta.full) {
+        Serial.printf("[zones] %u zone(s)\n", (unsigned)zones.zones().size());
+        for (const tftcore::Zone &z : zones.zones())
+            Serial.printf("        %-22s %-8s %s\n", z.name.c_str(), z.state.c_str(),
+                          z.nowPlaying.present ? z.nowPlaying.title.c_str() : "(nothing loaded)");
+        if (!g_sawZones) {
+            g_sawZones = true;
+            printMemory("zone list applied");
+            Serial.printf("[wire] the zone list was %u bytes\n", (unsigned)g_client.stats().subscribedLen);
+        }
+    }
+
+    const tftcore::Zone *z = zones.pick(g_zoneId.c_str());
+    if (!z) return;
+    if (g_zoneId != z->id.c_str()) {
+        g_zoneId = z->id.c_str();
+        Serial.printf("[zone] following \"%s\"\n", z->name.c_str());
+    }
+
+    String key = String(z->nowPlaying.title.c_str()) + "\x1f" + z->nowPlaying.artist.c_str();
+    if (z->nowPlaying.present && key != g_trackKey) {
+        g_trackKey = key;
+        Serial.printf("[track] %s - %s (%u s)\n", z->nowPlaying.artist.c_str(), z->nowPlaying.title.c_str(),
+                      (unsigned)z->nowPlaying.lengthSec);
+    }
+
+    if (delta.seekOnly && z->nowPlaying.seekSec != g_lastSeek) {
+        uint32_t now = millis();
+        if (g_lastSeekAt) {
+            int gap = (int)(now - g_lastSeekAt);
+            g_seekTicks++;
+            g_gapSum += gap;
+            if (gap < g_minGap) g_minGap = gap;
+            if (gap > g_maxGap) g_maxGap = gap;
+        }
+        g_lastSeekAt = now;
+        g_lastSeek = z->nowPlaying.seekSec;
+        Serial.printf("[pos] %3d s / %u s  %s\n", (int)z->nowPlaying.seekSec, (unsigned)z->nowPlaying.lengthSec,
+                      z->state.c_str());
+    }
+}
+
+void printStats() {
+    const tftcore::Client::Stats &st = g_client.stats();
+    Serial.printf("[wire] %u messages, %llu bytes, largest %u, zone list %u\n", st.messages,
+                  (unsigned long long)st.totalBytes, (unsigned)st.maxLen, (unsigned)st.subscribedLen);
+    if (g_seekTicks)
+        Serial.printf("[wire] %d position pushes, gap min %d ms, mean %ld ms, max %d ms\n", g_seekTicks, g_minGap,
+                      g_gapSum / g_seekTicks, g_maxGap);
+    printMemory("now");
+}
+
+void console() {
+    if (!Serial.available()) return;
+    char c = (char)Serial.read();
+    if (c == 's') {
+        printStats();
+    } else if (c == 'f') {
+        g_prefs.remove("srv");
+        g_prefs.remove("tok");
+        g_client.forget();
+        Serial.println("[pair] forgotten");
+    } else if (c == 'p' || c == 'n' || c == 'b') {
+        if (!g_client.paired() || !g_zoneId.length()) {
+            Serial.println("[cmd] not following a zone yet");
+            return;
+        }
+        const char *action = c == 'p' ? "playpause" : (c == 'n' ? "next" : "previous");
+        tftcore::Client::Reply r = g_client.control(g_zoneId.c_str(), action);
+        Serial.printf("[cmd] %s: %s\n", action, r.ok ? "ok" : (*r.name ? r.name : r.error));
+    }
+}
+#endif  // NO_CLIENT
+
+}  // namespace
+
+void setup() {
+    Serial.begin(115200);
+    delay(300);
+    Serial.println();
+    Serial.println("tft-core-client example: zones");
+    printMemory("boot");
+
+    String ssid, pass;
+    if (!wifiCredentials(ssid, pass)) {
+        Serial.println("No Wi-Fi credentials in NVS. Build with -DWIFI_SSID / -DWIFI_PASS once.");
+        return;
+    }
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    Serial.printf("Joining \"%s\"", ssid.c_str());
+    uint32_t until = millis() + 30000;
+    while (WiFi.status() != WL_CONNECTED && (int32_t)(millis() - until) < 0) {
+        delay(250);
+        Serial.print(".");
+    }
+    Serial.println();
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("Wi-Fi failed.");
+        return;
+    }
+    Serial.printf("Wi-Fi up, ip %s, rssi %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+    printMemory("wifi up");
+
+#ifndef NO_CLIENT
+    g_prefs.begin("tftcore", false);
+    String serverId = g_prefs.getString("srv", "");
+    String token = g_prefs.getString("tok", "");
+    if (token.length()) {
+        g_client.setToken(serverId.c_str(), token.c_str());
+        Serial.printf("[pair] reusing the pairing saved for %s\n", serverId.c_str());
+    }
+
+    static tftcore::ExtensionInfo info;
+    info.extensionId = "com.textfromtrack.panel-poc";
+    static String name = String("Zones example ") + String((uint32_t)ESP.getEfuseMac(), HEX);
+    info.displayName = name.c_str();
+    info.displayVersion = "0.1.0";
+    info.publisher = "Vincent Cruvellier";
+    info.email = "none@example.com";
+
+    g_client.onState(onState, nullptr);
+    g_client.onToken(onToken, nullptr);
+    g_client.onZones(onZones, nullptr);
+    g_client.begin(info);
+    Serial.println("Console: p play/pause, n next, b previous, s stats, f forget pairing");
+#else
+    // The baseline links what the host firmware already has (ArduinoJson, WiFiUDP) but not the
+    // client, so the difference between the two images is the library's own code and nothing else.
+    {
+        JsonDocument doc;
+        deserializeJson(doc, "{\"zones\":[{\"zone_id\":\"z\",\"state\":\"playing\"}]}");
+        JsonVariantConst z = doc["zones"][0];
+        Serial.printf("Baseline build (no client). json: %s %s\n", (const char *)(z["zone_id"] | "?"),
+                      (const char *)(z["state"] | "?"));
+        char out[64];
+        serializeJson(doc, out, sizeof out);
+        Serial.println(out);
+        WiFiUDP udp;
+        udp.begin(0);
+        udp.beginPacket(WiFi.broadcastIP(), 9003);
+        udp.write((const uint8_t *)"SOOD", 4);
+        Serial.printf("udp: %d\n", udp.endPacket());
+        udp.stop();
+    }
+#endif
+}
+
+void loop() {
+#ifndef NO_CLIENT
+    g_client.tick();
+    console();
+#endif
+    delay(5);
+}

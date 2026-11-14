@@ -1,0 +1,15 @@
+tft-core-client
+
+This library speaks the extension protocol of Roon Labs' music software: SOOD
+discovery, MOO messages over a WebSocket, and the registry, transport and browse
+services. The protocol has no official specification. The behaviour implemented
+here was learned by reading Roon Labs' own JavaScript client, node-roon-api
+(https://github.com/RoonLabs/node-roon-api), which is licensed under the
+Apache License 2.0, and by observing a Roon Core on a local network.
+
+No source code from node-roon-api is included in or derived from this library;
+all code here was written independently from the protocol description in
+docs/PROTOCOL.md.
+
+"Roon" is a trademark of Roon Labs LLC. This library is not affiliated with,
+endorsed by, or supported by Roon Labs LLC.
