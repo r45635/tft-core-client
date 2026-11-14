@@ -43,11 +43,20 @@ void printMemory(const char *when) {
 }
 
 // Reads one line from the serial console, echoing stars for a secret. Blocks until Enter.
+// The question is asked again every few seconds for as long as nothing has been typed: a console
+// opened after the board started would otherwise show an empty screen, and typing into an
+// invisible prompt is how the wrong thing ends up in the wrong field.
 String askLine(const char *prompt, bool secret) {
-    Serial.printf("%s: ", prompt);
+    Serial.printf("\n%s: ", prompt);
     String line;
+    uint32_t askedAt = millis();
     while (true) {
-        while (!Serial.available()) delay(10);
+        while (!Serial.available()) {
+            delay(10);
+            if (line.length() || (int32_t)(millis() - askedAt) < 5000) continue;
+            askedAt = millis();
+            Serial.printf("\n%s: ", prompt);
+        }
         char c = (char)Serial.read();
         if (c == '\r') continue;
         if (c == '\n') {
@@ -63,6 +72,16 @@ String askLine(const char *prompt, bool secret) {
         if (c < 32) continue;
         line += c;
         Serial.print(secret ? '*' : c);
+    }
+}
+
+// Drops whatever Wi-Fi credentials this example stored (not the panel firmware's own).
+void forgetWifi() {
+    Preferences own;
+    if (own.begin("tftcore", false)) {
+        own.remove("ssid");
+        own.remove("pass");
+        own.end();
     }
 }
 
@@ -87,10 +106,12 @@ bool wifiCredentials(String &ssid, String &pass) {
     if (ssid.length()) return true;
 
     Serial.println();
-    Serial.println("No Wi-Fi credentials on this board yet. Type them once (they stay in NVS).");
-    ssid = askLine("Wi-Fi name", false);
+    Serial.println("No Wi-Fi credentials on this board yet. Two questions, in this order.");
+    ssid = askLine("1 of 2  name of the Wi-Fi network (not the password)", false);
     if (!ssid.length()) return false;
-    pass = askLine("Wi-Fi password", true);
+    char prompt[96];
+    snprintf(prompt, sizeof prompt, "2 of 2  password for \"%s\" (hidden)", ssid.c_str());
+    pass = askLine(prompt, true);
     if (own.begin("tftcore", false)) {
         own.putString("ssid", ssid);
         own.putString("pass", pass);
@@ -168,7 +189,12 @@ void printStats() {
 void console() {
     if (!Serial.available()) return;
     char c = (char)Serial.read();
-    if (c == 's') {
+    if (c == 'w') {
+        forgetWifi();
+        Serial.println("[wifi] forgotten, restarting to ask again");
+        delay(500);
+        ESP.restart();
+    } else if (c == 's') {
         printStats();
     } else if (c == 'f') {
         g_prefs.remove("srv");
@@ -228,8 +254,12 @@ void setup() {
     }
     Serial.println();
     if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("Wi-Fi failed.");
-        return;
+        // The name is deliberately not printed back: if the two answers were given the wrong way
+        // round, printing it would put a password in a log that gets read and pasted around.
+        Serial.println("Could not join that network. Forgetting it so the next boot asks again.");
+        forgetWifi();
+        delay(2000);
+        ESP.restart();
     }
     Serial.printf("Wi-Fi up, ip %s, rssi %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
     printMemory("wifi up");

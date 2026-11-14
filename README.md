@@ -107,6 +107,19 @@ So a client that follows a zone costs about **20 KB per minute on one connection
 polling a middleman takes. Size your receive buffer from the zone list: it grows with the number
 of zones, roughly 1.2 KB each, and it is the only large message.
 
+### On a board
+
+Run on a Guition JC1060P470C (ESP32-P4, 16 MB flash, 32 MB PSRAM) on 2026-11-14: the example
+boots, its radio answers (a scan hears the neighbourhood), and it leaves **548 KB of internal RAM
+free** before the client starts, with 32 MB of PSRAM untouched. The client's own buffers come from
+PSRAM, so that figure is what a host application keeps for itself.
+
+Giving a bare board its Wi-Fi credentials is the one step that cannot be automated from a
+development machine, so `tools/wifi-setup.py` does it in one command: it asks for the network
+name, then the password with the typing hidden, answers the board's two questions and shows it
+joining. Nothing is stored on the machine, and a board that already ran firmware with credentials
+in NVS needs none of this.
+
 ## Licence
 
 MIT, see [LICENSE](LICENSE) and [NOTICE](NOTICE).
