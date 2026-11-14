@@ -11,7 +11,7 @@
 #include <WiFiUdp.h>
 #include <esp_heap_caps.h>
 
-#include "arduino_io.h"
+#include <tftcore/arduino_io.h>
 #ifndef NO_CLIENT
 #include "tftcore/client.h"
 #endif

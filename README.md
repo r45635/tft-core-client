@@ -33,7 +33,7 @@ MOO image service (the HTTP form is simpler), queue subscriptions, and settings 
 ## Using it
 
 ```cpp
-#include "arduino_io.h"          // ports/arduino, header-only
+#include <tftcore/arduino_io.h>   // the ESP32 port, header-only
 #include "tftcore/client.h"
 
 tftcore::arduino::TcpStream stream;
@@ -64,7 +64,7 @@ WebSocket handshake and the 1.5 s discovery window. Requests (`control`, `change
 `browse`...) are synchronous: they pump the socket until the reply arrives, so a zone update can
 still be delivered while one is in flight. **A callback must not call back into the Client.**
 
-Ports: `ports/arduino` (ESP32, header-only) and `ports/posix` (host). A new platform means three
+Ports: `include/tftcore/arduino_io.h` (ESP32, header-only) and `ports/posix` (host). A new platform means three
 small interfaces: `ByteStream`, `UdpSocket` and `Clock` in `include/tftcore/io.h`.
 
 ## Building
