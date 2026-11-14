@@ -42,8 +42,33 @@ void printMemory(const char *when) {
                   (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
 }
 
-// The TFT Panel firmware keeps the Wi-Fi credentials in NVS; reuse them so nothing has to be
-// typed on a board that has already run it, and nothing lands in the repository.
+// Reads one line from the serial console, echoing stars for a secret. Blocks until Enter.
+String askLine(const char *prompt, bool secret) {
+    Serial.printf("%s: ", prompt);
+    String line;
+    while (true) {
+        while (!Serial.available()) delay(10);
+        char c = (char)Serial.read();
+        if (c == '\r') continue;
+        if (c == '\n') {
+            Serial.println();
+            line.trim();
+            return line;
+        }
+        if ((c == 8 || c == 127) && line.length()) {   // backspace
+            line.remove(line.length() - 1);
+            Serial.print("\b \b");
+            continue;
+        }
+        if (c < 32) continue;
+        line += c;
+        Serial.print(secret ? '*' : c);
+    }
+}
+
+// Where the Wi-Fi credentials come from, in order: the TFT Panel firmware's own NVS (a board
+// that has already run it needs nothing), then ours from a previous run, then typed once on this
+// console. They are never a build flag, so no password reaches the repository or the build log.
 bool wifiCredentials(String &ssid, String &pass) {
     Preferences panel;
     if (panel.begin("tftpanel", true)) {
@@ -51,13 +76,28 @@ bool wifiCredentials(String &ssid, String &pass) {
         pass = panel.getString("pass", "");
         panel.end();
     }
-#if defined(WIFI_SSID) && defined(WIFI_PASS)
-    if (!ssid.length()) {
-        ssid = WIFI_SSID;
-        pass = WIFI_PASS;
+    if (ssid.length()) return true;
+
+    Preferences own;
+    if (own.begin("tftcore", true)) {
+        ssid = own.getString("ssid", "");
+        pass = own.getString("pass", "");
+        own.end();
     }
-#endif
-    return ssid.length() > 0;
+    if (ssid.length()) return true;
+
+    Serial.println();
+    Serial.println("No Wi-Fi credentials on this board yet. Type them once (they stay in NVS).");
+    ssid = askLine("Wi-Fi name", false);
+    if (!ssid.length()) return false;
+    pass = askLine("Wi-Fi password", true);
+    if (own.begin("tftcore", false)) {
+        own.putString("ssid", ssid);
+        own.putString("pass", pass);
+        own.end();
+        Serial.println("Saved. The next boot joins on its own.");
+    }
+    return true;
 }
 
 #ifndef NO_CLIENT
@@ -156,12 +196,29 @@ void setup() {
     Serial.println("tft-core-client example: zones");
     printMemory("boot");
 
+    // A scan first: it needs no credentials and proves the radio answers. On an ESP32-P4 the
+    // radio is a separate ESP32-C6 over SDIO, so a scan that finds nothing means the link to it
+    // is wrong (pins or firmware) and no password would have helped.
+    WiFi.mode(WIFI_STA);
+    Serial.println("Scanning for networks (the radio has to answer for anything else to work)...");
+    int found = WiFi.scanNetworks();
+    if (found <= 0) {
+        Serial.printf("The radio found no network (result %d). On a P4 that usually means the "
+                      "link to the Wi-Fi co-processor is not working on this board.\n", found);
+    } else {
+        int strongest = -200;
+        for (int i = 0; i < found; i++)
+            if (WiFi.RSSI(i) > strongest) strongest = WiFi.RSSI(i);
+        // The names are left out on purpose: the count is what proves the radio works.
+        Serial.printf("The radio works: %d network(s) heard, strongest %d dBm.\n", found, strongest);
+    }
+    WiFi.scanDelete();
+
     String ssid, pass;
     if (!wifiCredentials(ssid, pass)) {
-        Serial.println("No Wi-Fi credentials in NVS. Build with -DWIFI_SSID / -DWIFI_PASS once.");
+        Serial.println("No Wi-Fi name given; nothing to join. Reset to try again.");
         return;
     }
-    WiFi.mode(WIFI_STA);
     WiFi.begin(ssid.c_str(), pass.c_str());
     Serial.printf("Joining \"%s\"", ssid.c_str());
     uint32_t until = millis() + 30000;

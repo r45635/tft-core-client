@@ -115,6 +115,10 @@ bool keyPressed(char &c) {
 }  // namespace
 
 int main(int argc, char **argv) {
+    // Line buffered even when the output is a file: this is a tool you watch while it runs, and
+    // a redirected run must not look dead for minutes.
+    setvbuf(stdout, nullptr, _IOLBF, 0);
+
     const char *host = nullptr;
     uint16_t port = 9330;
     int seconds = 0;

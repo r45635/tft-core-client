@@ -92,9 +92,20 @@ IDF 5.5, `-Os`:
 Two choices account for about 18 KiB of that on the S3: no `sscanf` (an IPv4 parser written out)
 and no float conversion in `snprintf` (volumes formatted by hand). Keep them if flash is tight.
 
-On the wire, against a Roon 2.73 Core: a registry reply is ~200 bytes. The full zone list and the
-per-second position pushes are measured by the examples (`s` on the console) and will be filled
-in here once the on-board run is done.
+On the wire, measured against a Roon 2.73 Core with **5 zones**, one of them playing, over a
+60-second run of `zones-host`:
+
+| | |
+|---|---|
+| Messages received | 62 in 60 s, 19,917 bytes in all |
+| Full zone list (`Subscribed`) | 5,900 bytes, the largest message seen (5,993) |
+| Position pushes | 58, one per second: gap 803 ms at the shortest, 997 ms on average, 1,010 ms at the longest |
+| Registry reply | ~200 bytes |
+
+So a client that follows a zone costs about **20 KB per minute on one connection**, against the
+212 HTTP requests a minute (one every 300 ms for the track, one every 5 s for the zones) that
+polling a middleman takes. Size your receive buffer from the zone list: it grows with the number
+of zones, roughly 1.2 KB each, and it is the only large message.
 
 ## Licence
 
