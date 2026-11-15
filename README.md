@@ -6,7 +6,7 @@ Core pushes them, and drives playback, volume and library browsing.
 
 As far as I could find, no such client existed for C or C++: the official one is JavaScript, and
 the community ports are Python and Go. This one was written for the
-[TFT Panel](https://github.com/r45635/tft-panel) lyrics screens, so it is shaped by what a
+[TFT Panel](https://github.com/r45635/tft-panel) touch screens, so it is shaped by what a
 microcontroller can afford: no exceptions, no hidden allocations, every buffer in the memory the
 caller chooses, and a host build so the protocol can be tested on a PC against a real Core.
 
@@ -109,10 +109,15 @@ of zones, roughly 1.2 KB each, and it is the only large message.
 
 ### On a board
 
-Run on a Guition JC1060P470C (ESP32-P4, 16 MB flash, 32 MB PSRAM) on 2026-11-14: the example
-boots, its radio answers (a scan hears the neighbourhood), and it leaves **548 KB of internal RAM
-free** before the client starts, with 32 MB of PSRAM untouched. The client's own buffers come from
-PSRAM, so that figure is what a host application keeps for itself.
+In daily use since 2026-11-15 inside the [TFT Panel](https://github.com/r45635/tft-panel)
+firmware, on an ESP32-S3 (CrowPanel 7") and an ESP32-P4 (VIEWE 7"): discovery, pairing kept across
+reboots, zones, transport, volume, cover art and library browsing, against a Roon 2.74 Core.
+
+What it costs the host application, measured on the S3 — the tighter of the two — while paired,
+playing, and browsing 200 albums with their thumbnails: **51 KB of internal RAM still free, 43 KB
+at the low-water mark, and flat while browsing**, because the client's own buffers come from PSRAM.
+On the ESP32-P4 example alone, before the client starts, a board leaves 548 KB of internal RAM free
+(Guition JC1060P470C, 2026-11-14).
 
 Giving a bare board its Wi-Fi credentials is the one step that cannot be automated from a
 development machine, so `tools/wifi-setup.py` does it in one command: it asks for the network
