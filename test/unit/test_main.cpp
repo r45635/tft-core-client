@@ -6,6 +6,7 @@ int main() {
         {"sood discovery", testSood},
         {"websocket", testWs},
         {"zone merge", testZones},
+        {"queue merge", testQueue},
     };
     for (auto &s : suites) {
         int before = check::failures;
