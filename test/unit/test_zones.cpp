@@ -17,7 +17,7 @@ const char *SUBSCRIBED = R"({"zones":[
    "is_play_allowed":false,"is_pause_allowed":true,"is_next_allowed":true,"is_previous_allowed":true,
    "now_playing":{"seek_position":42,"length":215,"image_key":"img1",
                   "three_line":{"line1":"A song","line2":"A band","line3":"An album"}},
-   "outputs":[{"output_id":"o1","display_name":"Speaker",
+   "outputs":[{"output_id":"o1","display_name":"Speaker","can_group_with_output_ids":["o1","o22","o9","a b"],
                "volume":{"type":"db","min":-80,"max":0,"value":-34,"step":1,"is_muted":false}},
               {"output_id":"o2","display_name":"Amp"}]},
   {"zone_id":"z2","display_name":"Kitchen","state":"stopped","outputs":[]}
@@ -54,6 +54,21 @@ void testZones() {
             CHECK_STR(z->outputs[0].volume.type.c_str(), "db");
             CHECK_INT((int)z->outputs[0].volume.value, -34);
             CHECK(!z->outputs[1].volume.present);   // an output with no volume control
+            CHECK_STR(z->outputs[0].canGroupWith.c_str(), "o1 o22 o9");   // an id with a space is not one
+            CHECK(z->outputs[0].groupableWith("o1"));
+            CHECK(z->outputs[0].groupableWith("o22"));
+            CHECK(z->outputs[0].groupableWith("o9"));
+            CHECK(!z->outputs[0].groupableWith("o2"));    // part of o22, not an id in the list
+            CHECK(!z->outputs[0].groupableWith("2 o"));
+            CHECK(!z->outputs[0].groupableWith("22"));    // the end of o22
+            CHECK(!z->outputs[0].groupableWith("o7"));
+            CHECK(!z->outputs[0].groupableWith(""));
+            CHECK(!z->outputs[0].groupableWith(nullptr));
+            CHECK_STR(z->outputs[1].canGroupWith.c_str(), "");   // a Core that omits the list
+            CHECK(!z->outputs[1].groupableWith("o1"));
+            Output later;
+            later.canGroupWith = "o22 o2";
+            CHECK(later.groupableWith("o2"));   // the first match is inside o22; the second is it
         }
         const Zone *kitchen = list.find("z2");
         CHECK(kitchen != nullptr);

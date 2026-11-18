@@ -22,13 +22,14 @@ The protocol has no public specification: what this library implements is writte
 | Transport | a small RFC 6455 WebSocket client (binary masked frames, fragment reassembly, ping/pong keepalive) |
 | Framing | MOO messages: requests, replies, and subscription updates on an open request |
 | Pairing | registry info/register, with the token kept by the caller; tells you when a person must enable the extension |
-| Zones | one subscription, merged into a zone list: tracks, state, outputs, volume, and the position pushed once a second |
-| Controls | play/pause/next/previous, volume (absolute, relative, step), mute, seek |
+| Zones | one subscription, merged into a zone list: tracks, state, outputs, volume, which outputs can be grouped, and the position pushed once a second |
+| Queue | the followed zone's queue, subscribed and merged the same way, in one fixed block of the caller's memory; play from any item |
+| Controls | play/pause/next/previous, volume (absolute, relative, step), mute, seek, grouping and ungrouping outputs |
 | Library | browse and load, passed through so the caller owns the hierarchy and its own browse session |
 | Cover art | the URL on the Core's own HTTP port; fetch it with whatever HTTP client you already have |
 
 Not implemented: the pairing service (a client that follows a zone itself does not need it), the
-MOO image service (the HTTP form is simpler), queue subscriptions, and settings pages.
+MOO image service (the HTTP form is simpler), and settings pages.
 
 ## Using it
 
@@ -59,6 +60,10 @@ void setup() {
 void loop() { client.tick(); }                    // drives everything
 ```
 
+To show a zone's queue as well, name it with `client.followQueue(zoneId, 20)` (calling it every
+loop is fine) and set `client.onQueue(...)`; `client.playFromHere(zoneId, item.id)` plays from an
+item. Twenty items take one block of 8.6 KiB from the allocator, and no allocation per item.
+
 `tick()` discovers, connects, pairs, subscribes and reconnects. It blocks only during the
 WebSocket handshake and the 1.5 s discovery window. Requests (`control`, `changeVolume`,
 `browse`...) are synchronous: they pump the socket until the reply arrives, so a zone update can
@@ -70,9 +75,9 @@ small interfaces: `ByteStream`, `UdpSocket` and `Clock` in `include/tftcore/io.h
 ## Building
 
 ```bash
-make test          # unit tests on the host (159 checks)
+make test          # unit tests on the host (339 checks)
 make zones-host    # the command-line example
-./build/zones-host --seconds 60            # discovers, pairs, prints the zones and the position
+./build/zones-host --seconds 60            # discovers, pairs, prints the zones, the position and the queue
 ```
 
 The host build needs only a C++17 compiler; the Makefile fetches ArduinoJson (the same 7.4.2 the

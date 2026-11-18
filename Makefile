@@ -4,10 +4,10 @@ CXX ?= c++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -O1 -g
 ARDUINOJSON_VERSION := 7.4.2
 INC := -Iinclude -Ithird_party -Iports/posix
-LIB_SRC := src/buffer.cpp src/digest.cpp src/moo.cpp src/sood.cpp src/ws.cpp src/zones.cpp src/client.cpp \
+LIB_SRC := src/buffer.cpp src/digest.cpp src/moo.cpp src/sood.cpp src/ws.cpp src/zones.cpp src/queue.cpp src/client.cpp \
            ports/posix/posix_io.cpp
 TEST_SRC := test/unit/test_main.cpp test/unit/test_moo.cpp test/unit/test_sood.cpp test/unit/test_ws.cpp \
-            test/unit/test_zones.cpp
+            test/unit/test_zones.cpp test/unit/test_queue.cpp test/unit/test_client.cpp
 JSON := third_party/ArduinoJson.h
 
 .PHONY: all test zones-host clean

@@ -1,5 +1,5 @@
-// The whole client: discovery, WebSocket, pairing, the zone subscription, and synchronous
-// calls for everything a user action needs (controls, volume, browse).
+// The whole client: discovery, WebSocket, pairing, the zone and queue subscriptions, and
+// synchronous calls for everything a user action needs (controls, volume, grouping, browse).
 #pragma once
 
 #include <ArduinoJson.h>
@@ -9,6 +9,7 @@
 #include "buffer.h"
 #include "io.h"
 #include "moo.h"
+#include "queue.h"
 #include "sood.h"
 #include "ws.h"
 #include "zones.h"
@@ -65,14 +66,32 @@ class Client {
     const char *lastError() const { return err_; }
     const ZoneList &zones() const { return zones_; }
 
+    // The play queue of one zone, kept up to date by its own subscription once paired, and
+    // subscribed again after every reconnection. `zoneOrOutputId` "" stops following; the same
+    // id again changes nothing, so it can be called every loop. The queue holds at most
+    // `maxItems` (the server is asked for no more), in one block from the allocator, taken when
+    // the subscription starts, and given back when nothing is followed. false = an id too long
+    // to be one, or no room asked for. After a refusal, following "" then the same id again
+    // asks once more.
+    bool followQueue(const char *zoneOrOutputId, uint16_t maxItems = 20);
+    const char *queueTarget() const { return queueWant_; }
+    // true once the server has sent the queue and while it keeps it up to date; false after a
+    // refusal (an unknown zone, say) until another zone is followed or the client reconnects.
+    bool queueSubscribed() const { return queueSubscribed_; }
+    const QueueList &queue() const { return queue_; }
+
     // --- Events. Set them before begin(); they are called from tick(). ---
     using ZonesCb = void (*)(void *ctx, const ZoneList &zones, const ZoneDelta &delta);
     using TokenCb = void (*)(void *ctx, const char *serverId, const char *token);
     using StateCb = void (*)(void *ctx, State state, const char *detail);
+    using QueueCb = void (*)(void *ctx, const char *zoneOrOutputId, const QueueList &queue);
     void onZones(ZonesCb cb, void *ctx) { zonesCb_ = cb; zonesCtx_ = ctx; }
     // A new or refreshed token: persist it, or the user authorizes again after every restart.
     void onToken(TokenCb cb, void *ctx) { tokenCb_ = cb; tokenCtx_ = ctx; }
     void onState(StateCb cb, void *ctx) { stateCb_ = cb; stateCtx_ = ctx; }
+    // The followed queue arrived in full, changed, or was emptied (refused, ended, or out of
+    // step until the next Subscribed).
+    void onQueue(QueueCb cb, void *ctx) { queueCb_ = cb; queueCtx_ = ctx; }
 
     // --- Requests. They pump the socket until the reply arrives, so a zone push can be
     // delivered while one is in flight; they never run before paired(). ---
@@ -89,6 +108,13 @@ class Client {
     Reply changeVolume(const char *outputId, const char *how, float value);
     Reply mute(const char *outputId, bool on);
     Reply seek(const char *zoneOrOutputId, const char *how, int32_t seconds);
+    // Plays the zone's queue from that item on (QueueItem::id).
+    Reply playFromHere(const char *zoneOrOutputId, uint32_t queueItemId);
+    // Groups outputs into one zone; the first output's zone keeps its queue, so what it plays
+    // goes on. Only outputs listed in each other's Output::canGroupWith can be grouped.
+    Reply groupOutputs(const char *const *outputIds, size_t count);
+    // Splits those outputs out of their group, each back to a zone of its own.
+    Reply ungroupOutputs(const char *const *outputIds, size_t count);
     // Browse and load pass the caller's body through unchanged (hierarchy, multi_session_key
     // and the rest are the caller's business: see docs/PROTOCOL.md section 6).
     Reply browse(const char *jsonBody, JsonDocument &resp, uint32_t timeoutMs = 10000);
@@ -117,6 +143,9 @@ class Client {
     bool discover();
     bool connectAndRegister();
     void subscribeZones();
+    void syncQueue();
+    void unsubscribeQueue();
+    Reply outputsCall(const char *what, const char *const *outputIds, size_t count);
     void dropConnection();
     void handleMessage(const uint8_t *msg, size_t len);
     void handleReply(const MooHeader &h, const uint8_t *body, size_t len);
@@ -132,6 +161,7 @@ class Client {
     Alloc &alloc_;
     WsClient ws_;
     ZoneList zones_;
+    QueueList queue_;
     ExtensionInfo info_{};
     Stats stats_{};
 
@@ -152,6 +182,16 @@ class Client {
     int requestId_ = 0;
     int registerId_ = -1, zonesId_ = -1, pendingId_ = -1;
 
+    // The queue the caller wants, and the one subscribed (or asked for) on this connection;
+    // tick() brings the second in line with the first.
+    char queueWant_[72] = {0};
+    uint16_t queueWantMax_ = 0;
+    char queueHave_[72] = {0};
+    bool queueRequested_ = false;
+    bool queueSubscribed_ = false;
+    int queueId_ = -1;
+    char queueKey_[12] = {0};
+
     // The reply the running call() waits for.
     bool waiting_ = false;
     bool got_ = false;
@@ -162,6 +202,7 @@ class Client {
     ZonesCb zonesCb_ = nullptr;   void *zonesCtx_ = nullptr;
     TokenCb tokenCb_ = nullptr;   void *tokenCtx_ = nullptr;
     StateCb stateCb_ = nullptr;   void *stateCtx_ = nullptr;
+    QueueCb queueCb_ = nullptr;   void *queueCtx_ = nullptr;
 };
 
 }  // namespace tftcore

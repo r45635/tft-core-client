@@ -3,26 +3,34 @@
 #include <cstring>
 
 namespace tftcore {
-namespace {
 
-// Roon gives the track as one, two or three display lines, best first.
-void readLines(JsonVariantConst np, NowPlaying &out) {
-    JsonVariantConst three = np["three_line"];
-    JsonVariantConst two = np["two_line"];
-    JsonVariantConst one = np["one_line"];
+void readTrackLines(JsonVariantConst j, const char *&title, const char *&artist, const char *&album) {
+    title = artist = album = "";
+    JsonVariantConst three = j["three_line"];
+    JsonVariantConst two = j["two_line"];
+    JsonVariantConst one = j["one_line"];
     if (!three.isNull()) {
-        out.title = three["line1"] | "";
-        out.artist = three["line2"] | "";
-        out.album = three["line3"] | "";
+        title = three["line1"] | "";
+        artist = three["line2"] | "";
+        album = three["line3"] | "";
     } else if (!two.isNull()) {
-        out.title = two["line1"] | "";
-        out.artist = two["line2"] | "";
+        title = two["line1"] | "";
+        artist = two["line2"] | "";
     } else if (!one.isNull()) {
-        out.title = one["line1"] | "";
+        title = one["line1"] | "";
     }
 }
 
-}  // namespace
+bool Output::groupableWith(const char *outputId) const {
+    if (!outputId || !*outputId) return false;
+    size_t n = strlen(outputId);
+    for (size_t at = canGroupWith.find(outputId); at != std::string::npos; at = canGroupWith.find(outputId, at + 1)) {
+        bool starts = at == 0 || canGroupWith[at - 1] == ' ';
+        bool ends = at + n == canGroupWith.size() || canGroupWith[at + n] == ' ';
+        if (starts && ends) return true;
+    }
+    return false;
+}
 
 void ZoneList::readZone(JsonVariantConst j, Zone &z) {
     z = Zone{};
@@ -38,7 +46,11 @@ void ZoneList::readZone(JsonVariantConst j, Zone &z) {
     JsonVariantConst np = j["now_playing"];
     if (!np.isNull()) {
         z.nowPlaying.present = true;
-        readLines(np, z.nowPlaying);
+        const char *title, *artist, *album;
+        readTrackLines(np, title, artist, album);
+        z.nowPlaying.title = title;
+        z.nowPlaying.artist = artist;
+        z.nowPlaying.album = album;
         z.nowPlaying.imageKey = np["image_key"] | "";
         z.nowPlaying.lengthSec = np["length"] | 0u;
         z.nowPlaying.seekSec = np["seek_position"].isNull() ? -1 : (int32_t)(np["seek_position"] | 0);
@@ -57,6 +69,16 @@ void ZoneList::readZone(JsonVariantConst j, Zone &z) {
             out.volume.value = v["value"] | 0.0f;
             out.volume.step = v["step"] | 1.0f;
             out.volume.muted = v["is_muted"] | false;
+        }
+        JsonArrayConst group = o["can_group_with_output_ids"].as<JsonArrayConst>();
+        size_t len = 0;
+        for (JsonVariantConst g : group) len += strlen(g | "") + 1;
+        out.canGroupWith.reserve(len);
+        for (JsonVariantConst g : group) {
+            const char *gid = g | "";
+            if (!*gid || strchr(gid, ' ')) continue;
+            if (!out.canGroupWith.empty()) out.canGroupWith += ' ';
+            out.canGroupWith += gid;
         }
         z.outputs.push_back(std::move(out));
     }

@@ -1,4 +1,5 @@
-// Pairs with a music server on the local network, follows one zone, and prints what arrives.
+// Pairs with a music server on the local network, follows one zone and its queue, and prints
+// what arrives.
 // Read-only unless you press a key: it is meant to be run while nobody is listening.
 //
 //   make zones-host && ./build/zones-host [--host 192.168.1.10] [--port 9330] [--seconds 60]
@@ -11,6 +12,7 @@
 #include <sys/select.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <string>
 
 #include "posix_io.h"
@@ -68,9 +70,15 @@ void onZones(void *ctx, const ZoneList &zones, const ZoneDelta &delta) {
 
     if (delta.full) {
         printf("= %zu zone(s):\n", zones.zones().size());
-        for (const Zone &z : zones.zones())
+        for (const Zone &z : zones.zones()) {
             printf("    %-22s %-8s %s\n", z.name.c_str(), z.state.c_str(),
                    z.nowPlaying.present ? z.nowPlaying.title.c_str() : "(nothing loaded)");
+            for (const Output &o : z.outputs) {
+                const std::string &ids = o.canGroupWith;
+                size_t n = ids.empty() ? 0 : (size_t)std::count(ids.begin(), ids.end(), ' ') + 1;
+                printf("      output %-15s can be grouped with %zu output(s)\n", o.name.c_str(), n);
+            }
+        }
     }
 
     const Zone *z = zones.pick(f->zoneId.c_str());
@@ -101,6 +109,12 @@ void onZones(void *ctx, const ZoneList &zones, const ZoneDelta &delta) {
         printf("  %3d s / %u s  %s\n", (int)z->nowPlaying.seekSec, (unsigned)z->nowPlaying.lengthSec,
                z->state.c_str());
     }
+}
+
+void onQueue(void *, const char *zoneOrOutputId, const QueueList &queue) {
+    printf("= queue of %s: %zu item(s)\n", zoneOrOutputId, queue.size());
+    for (const QueueItem &it : queue)
+        printf("    #%-10u %s - %s (%u s)\n", (unsigned)it.id, it.artist, it.title, (unsigned)it.lengthSec);
 }
 
 bool keyPressed(char &c) {
@@ -153,6 +167,7 @@ int main(int argc, char **argv) {
     client.onState(onState, nullptr);
     client.onZones(onZones, &follow);
     client.onToken(saveToken, nullptr);
+    client.onQueue(onQueue, nullptr);
     if (host) {
         client.setServer(host, port);
         printf("= server fixed at %s:%u\n", host, (unsigned)port);
@@ -163,6 +178,7 @@ int main(int argc, char **argv) {
     uint32_t start = clock.nowMs();
     while (true) {
         client.tick();
+        client.followQueue(follow.zoneId.c_str(), 10);   // nothing to do while it stays the same
 
         char c;
         if (keyPressed(c)) {
