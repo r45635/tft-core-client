@@ -47,3 +47,4 @@ void testSood();
 void testWs();
 void testZones();
 void testQueue();
+void testClient();

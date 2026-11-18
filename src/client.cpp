@@ -50,7 +50,7 @@ const char *stateName(State s) {
 
 Client::Client(ByteStream &stream, UdpSocket &udp, Clock &clock, Alloc &alloc)
     : udp_(udp), clock_(clock), alloc_(alloc), ws_(stream, clock, alloc),
-      gotBody_(alloc), reqBuf_(alloc) {}
+      queue_(alloc), gotBody_(alloc), reqBuf_(alloc) {}
 
 void Client::begin(const ExtensionInfo &info) {
     info_ = info;
@@ -105,6 +105,11 @@ void Client::dropConnection() {
     got_ = false;
     registerId_ = zonesId_ = pendingId_ = -1;
     zones_.clear();
+    queueRequested_ = false;
+    queueSubscribed_ = false;
+    queueId_ = -1;
+    queueHave_[0] = 0;
+    queue_.clear();
 }
 
 void Client::disconnect() {
@@ -250,6 +255,32 @@ void Client::handleReply(const MooHeader &h, const uint8_t *body, size_t len) {
         return;
     }
 
+    if (h.requestId == queueId_ && queueId_ >= 0) {
+        char target[sizeof queueHave_];
+        copyStr(target, sizeof target, queueHave_);
+        bool update = h.is("Subscribed") || h.is("Changed");
+        JsonDocument doc(&ja);
+        bool read = update && h.json && len && !deserializeJson(doc, body, len);
+        if (!update) {
+            // Unsubscribed, or refused (an unknown zone): over until another zone is followed or
+            // the connection is made again.
+            queueId_ = -1;
+            queueSubscribed_ = false;
+            queue_.clear();
+        } else if (read && h.is("Subscribed")) {
+            queue_.applySubscribed(doc.as<JsonVariantConst>());
+            queueSubscribed_ = true;
+        } else if (!read || !queue_.applyChanged(doc.as<JsonVariantConst>())) {
+            unsubscribeQueue();
+            // A change missed or not applicable: our list is no longer the server's, so tick()
+            // subscribes again. A Subscribed we cannot read would fail the same way next time,
+            // so it ends there, as a refusal does.
+            if (h.is("Changed")) queueRequested_ = false;
+        }
+        if (queueCb_) queueCb_(queueCtx_, target, queue_);
+        return;
+    }
+
     if (waiting_ && h.requestId == pendingId_) {
         gotHeader_ = h;
         gotBody_.clear();
@@ -364,6 +395,56 @@ void Client::subscribeZones() {
     zonesRequested_ = true;
 }
 
+bool Client::followQueue(const char *zoneOrOutputId, uint16_t maxItems) {
+    if (!zoneOrOutputId) zoneOrOutputId = "";
+    if (strlen(zoneOrOutputId) >= sizeof queueWant_ || (*zoneOrOutputId && !maxItems)) return false;
+    bool same = strcmp(zoneOrOutputId, queueWant_) == 0 && maxItems == queueWantMax_;
+    if (same) return true;   // safe to call every loop: a refused zone is not asked again
+    copyStr(queueWant_, sizeof queueWant_, zoneOrOutputId);
+    queueWantMax_ = maxItems;
+    queueRequested_ = false;   // tick() does the rest, outside any callback
+    return true;
+}
+
+void Client::unsubscribeQueue() {
+    if (queueId_ >= 0 && ws_.isOpen()) {
+        char method[80], body[48];
+        snprintf(method, sizeof method, "%s/unsubscribe_queue", SVC_TRANSPORT);
+        snprintf(body, sizeof body, "{\"subscription_key\":\"%s\"}", queueKey_);
+        int id;
+        sendRequest(method, body, id);   // its answer is not waited for
+    }
+    queueId_ = -1;
+    queueSubscribed_ = false;
+    queueHave_[0] = 0;
+    queue_.clear();
+}
+
+void Client::syncQueue() {
+    queueRequested_ = true;
+    unsubscribeQueue();
+    if (!queueWant_[0]) {
+        queue_.reserve(0);   // nothing followed: give the block back
+        return;
+    }
+    if (!queue_.reserve(queueWantMax_)) {
+        setState(state_, "not enough memory for the queue");
+        return;
+    }
+    char method[80], body[192];
+    snprintf(method, sizeof method, "%s/subscribe_queue", SVC_TRANSPORT);
+    snprintf(queueKey_, sizeof queueKey_, "%d", nextRequestId());
+    snprintf(body, sizeof body, "{\"zone_or_output_id\":\"%s\",\"max_item_count\":%u,\"subscription_key\":\"%s\"}",
+             queueWant_, (unsigned)queueWantMax_, queueKey_);
+    if (!sendRequest(method, body, queueId_)) {
+        queueId_ = -1;
+        dropConnection();
+        setState(State::Failed, "cannot subscribe to the queue");
+        return;
+    }
+    copyStr(queueHave_, sizeof queueHave_, queueWant_);
+}
+
 void Client::tick() {
     if (state_ == State::Idle) return;
 
@@ -375,6 +456,7 @@ void Client::tick() {
             return;
         }
         if (state_ == State::Paired && !zonesRequested_) subscribeZones();
+        if (state_ == State::Paired && zonesRequested_ && !queueRequested_) syncQueue();
         return;
     }
 
@@ -461,6 +543,45 @@ Client::Reply Client::seek(const char *zoneOrOutputId, const char *how, int32_t 
     snprintf(body, sizeof body, "{\"zone_or_output_id\":\"%s\",\"how\":\"%s\",\"seconds\":%d}", zoneOrOutputId, how,
              (int)seconds);
     return call(method, body, nullptr, 5000);
+}
+
+Client::Reply Client::playFromHere(const char *zoneOrOutputId, uint32_t queueItemId) {
+    char method[80], body[192];
+    snprintf(method, sizeof method, "%s/play_from_here", SVC_TRANSPORT);
+    snprintf(body, sizeof body, "{\"zone_or_output_id\":\"%s\",\"queue_item_id\":%lu}", zoneOrOutputId,
+             (unsigned long)queueItemId);
+    return call(method, body, nullptr, 5000);
+}
+
+Client::Reply Client::groupOutputs(const char *const *outputIds, size_t count) {
+    return outputsCall("group_outputs", outputIds, count);
+}
+
+Client::Reply Client::ungroupOutputs(const char *const *outputIds, size_t count) {
+    return outputsCall("ungroup_outputs", outputIds, count);
+}
+
+Client::Reply Client::outputsCall(const char *what, const char *const *outputIds, size_t count) {
+    Reply rep;
+    if (!outputIds || !count) {
+        rep.error = "no outputs given";
+        return rep;
+    }
+    JsonAlloc ja(alloc_);
+    JsonDocument body(&ja);
+    JsonArray ids = body["output_ids"].to<JsonArray>();
+    for (size_t i = 0; i < count; i++) ids.add(outputIds[i] ? outputIds[i] : "");
+    Buffer text(alloc_);
+    size_t needed = measureJson(body);
+    if (!text.setSize(needed + 1)) {
+        rep.error = "out of memory";
+        return rep;
+    }
+    serializeJson(body, text.chars(), text.size());
+    text.data()[needed] = 0;
+    char method[80];
+    snprintf(method, sizeof method, "%s/%s", SVC_TRANSPORT, what);
+    return call(method, text.chars(), nullptr, 5000);
 }
 
 Client::Reply Client::browse(const char *jsonBody, JsonDocument &resp, uint32_t timeoutMs) {
