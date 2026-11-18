@@ -19,6 +19,11 @@ struct Volume {
 struct Output {
     std::string id, name;
     Volume volume;
+    // The ids of the outputs it can be grouped with, itself included, separated by spaces: one
+    // allocation per output rather than one per id, since every output lists most of the others.
+    std::string canGroupWith;
+
+    bool groupableWith(const char *outputId) const;
 };
 
 struct NowPlaying {
@@ -43,6 +48,10 @@ struct ZoneDelta {
     bool listChanged = false; // a zone was added, removed, renamed or its track/state changed
     bool seekOnly = false;    // nothing but zones_seek_changed
 };
+
+// Roon gives a track as one, two or three display lines, best first; the best one present wins.
+// Zones and queue items both carry them. The pointers live as long as `j`; "" when absent.
+void readTrackLines(JsonVariantConst j, const char *&title, const char *&artist, const char *&album);
 
 class ZoneList {
   public:
