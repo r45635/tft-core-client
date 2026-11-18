@@ -105,6 +105,7 @@ Content-Type: application/json
                    "two_line": {"line1": "title", "line2": "artist"},
                    "three_line": {"line1": "title", "line2": "artist", "line3": "album"} },
   "outputs": [ { "output_id": "...", "display_name": "...", "zone_id": "...",
+                 "can_group_with_output_ids": ["...", "..."],
                  "volume": { "type": "number|db|incremental", "min": -80, "max": 0,
                              "value": -34, "step": 1, "is_muted": false } } ] }
 ```
@@ -112,6 +113,8 @@ Content-Type: application/json
   `now_playing` is absent when nothing is loaded. `volume` is absent when the output has none.
   `seek_position` and `length` are whole seconds. An `incremental` volume carries only its
   type: the control is +/- buttons, with no value to show.
+  `can_group_with_output_ids` lists the outputs this one can share a group with, itself
+  included.
 - `control` `{zone_or_output_id, control}` where control is
   `play | pause | playpause | stop | previous | next`.
 - `change_volume` `{output_id, how, value}`, how is `absolute | relative | relative_step`.
@@ -119,6 +122,32 @@ Content-Type: application/json
 - `mute` `{output_id, how}`, how is `mute | unmute`.
 - `seek` `{zone_or_output_id, how, seconds}`, how is `relative | absolute`.
 - Replies are `Success` or an error name; a `control` on an idle zone fails.
+- `group_outputs` `{output_ids: [...]}` makes one zone of those outputs. The zone of the
+  **first** output keeps its queue, so listing the zone that is playing first lets it play on
+  in the new group. `ungroup_outputs` `{output_ids: [...]}` takes those outputs out of their
+  group, each back to a zone of its own. Either way the new zones arrive through
+  `subscribe_zones`.
+- `subscribe_queue` with `{zone_or_output_id, max_item_count, subscription_key}`.
+  - First reply, `Subscribed`: `{items: [QueueItem, ...]}`, the playing track first, at most
+    `max_item_count` of them.
+  - Then `Changed`: `{changes: [Change, ...]}`, applied **in order**, each on the list left by
+    the one before. A Change is `{operation: "remove", index, count}` (drop `count` items from
+    position `index`) or `{operation: "insert", index, items: [QueueItem]}` (put the items at
+    `index`, in their order).
+  - A QueueItem: `{queue_item_id, length, image_key, one_line, two_line, three_line}`, the
+    lines shaped as in `now_playing`. `queue_item_id` is a number.
+  - `unsubscribe_queue` `{subscription_key}` ends it; the subscription's own request then
+    completes with `Unsubscribed`.
+  - A refusal (an unknown `zone_or_output_id`) or an `Unsubscribed` from the server ends the
+    subscription. This library does not ask again on its own; following `""` and then the same
+    id asks once more.
+- `play_from_here` `{zone_or_output_id, queue_item_id}` plays the queue from that item on.
+
+Grouping and the queue are not yet checked against a Core by this library: their shapes come
+from Roon Labs' JavaScript client (`node-roon-api-transport`, which sends the requests above),
+Roon Labs' Control4 driver (which applies the queue changes as described) and the Rust port
+`rust-roon-api` (which types every field named here). `examples/zones_host` prints both, read
+only, for checking them on a real Core.
 
 ## 6. Browse service `com.roonlabs.browse:1`
 
