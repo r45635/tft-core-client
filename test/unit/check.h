@@ -46,3 +46,4 @@ void testMoo();
 void testSood();
 void testWs();
 void testZones();
+void testClient();

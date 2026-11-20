@@ -14,7 +14,11 @@ constexpr const char *SVC_PING = "com.roonlabs.ping:1";
 constexpr uint32_t INFO_TIMEOUT_MS = 5000;
 // A Core with a valid token answers at once; without one the reply only comes when a person
 // enables the extension, so we wait a moment and then say so on screen.
+// How long a pending registration may stay pending before the user is told to enable the
+// extension. With a token we believe we are already paired, so the answer is the server's to
+// give: accusing the user after two seconds is a wrong instruction on screen.
 constexpr uint32_t REGISTER_WAIT_MS = 2500;
+constexpr uint32_t REGISTER_WAIT_TOKEN_MS = 15000;
 
 // JSON documents allocate where the caller's allocator says (PSRAM on the panel).
 struct JsonAlloc : ArduinoJson::Allocator {
@@ -321,7 +325,8 @@ bool Client::connectAndRegister() {
     required.add(SVC_BROWSE);
     body["optional_services"].to<JsonArray>();
     body["provided_services"].to<JsonArray>();
-    if (token_[0] && strcmp(tokenServerId_, serverId_) == 0) body["token"] = token_;
+    const bool sentToken = token_[0] && strcmp(tokenServerId_, serverId_) == 0;
+    if (sentToken) body["token"] = token_;
 
     Buffer text(alloc_);
     size_t needed = measureJson(body);
@@ -341,7 +346,13 @@ bool Client::connectAndRegister() {
     }
     // The reply arrives at once with a valid token; otherwise only once a person enables the
     // extension. Either way the request stays open and handleReply() finishes the job.
-    pump(clock_.nowMs() + REGISTER_WAIT_MS);
+    // got_ is still true from the info reply above, and pump() returns as soon as it is set:
+    // without this line the wait below is no wait at all, which is why a paired panel told its
+    // owner to enable the extension at every single boot (measured 2026-11-20).
+    got_ = false;
+    const uint32_t until = clock_.nowMs() + (sentToken ? REGISTER_WAIT_TOKEN_MS : REGISTER_WAIT_MS);
+    while (state_ == State::Registering && (int32_t)(clock_.nowMs() - until) < 0)
+        pump(clock_.nowMs() + 20);   // pump() leaves Registering on a failure, ending the wait
     if (state_ == State::Registering) {
         char detail[128];
         snprintf(detail, sizeof detail, "enable \"%s\" in the server's extension settings",
